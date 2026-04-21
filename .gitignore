@@ -25,3 +25,5 @@ cf2dns.log
 config.json
 .omx/
 .venv
+uv.lock
+docker-data
