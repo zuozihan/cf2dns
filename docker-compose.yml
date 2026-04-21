@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cf2dns:latest
+    image: zuozihan/cf2dns:latest
     container_name: cf2dns
     restart: unless-stopped
     env_file:
@@ -13,4 +13,7 @@ services:
       - LOG_FILE=/app/logs/cf2dns.log
       - INTERVAL_SECONDS=${INTERVAL_SECONDS:-900}
     volumes:
-      - ./docker-data/logs:/app/logs
+      - cf2dns_logs:/app/logs
+
+volumes:
+  cf2dns_logs:
