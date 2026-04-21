@@ -4,59 +4,119 @@
 import random
 import time
 import requests
+import re
+import html
+import ipaddress
+import os
+import json
 from dns.qCloud import QcloudApiv3 # QcloudApiv3 DNSPod 的 API 更新了 By github@z0z0r4
 from dns.aliyun import AliApi
 from dns.huawei import HuaWeiApi
 from log import Logger
 import traceback
 
-#可以从https://shop.hostmonit.com获取
-KEY = "o1zrmHAF"
+def load_dotenv(dotenv_path=".env"):
+    if not os.path.exists(dotenv_path):
+        return
+    with open(dotenv_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'")):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
 
-#CM:移动 CU:联通 CT:电信  AB:境外 DEF:默认
-#修改需要更改的dnspod域名和子域名
-DOMAINS = {
-    "hostxxnit.com": {"@": ["CM","CU","CT"], "shop": ["CM", "CU", "CT"], "stock": ["CM","CU","CT"]},
-    "484848.xyz": {"@": ["CM","CU","CT"], "shop": ["CM","CU","CT"]}
-}
 
-#解析生效条数 免费的DNSPod相同线路最多支持2条解析
-AFFECT_NUM = 2
+load_dotenv()
 
-#DNS服务商 如果使用DNSPod改为1 如果使用阿里云解析改成2  如果使用华为云解析改成3
-DNS_SERVER = 1
+# 可以从 https://shop.hostmonit.com 获取
+KEY = os.getenv("KEY", "o1zrmHAF")
 
-#如果使用华为云解析 需要从API凭证-项目列表中获取
-REGION_HW = 'cn-east-3'
+# CM:移动 CU:联通 CT:电信 AB:境外 DEF:默认
+# DOMAINS 示例: {"example.com": {"@": ["CM","CU","CT"]}}
+DOMAINS_RAW = os.getenv("DOMAINS", '{"example.com": {"@": ["CM","CU","CT"]}}')
+try:
+    DOMAINS = json.loads(DOMAINS_RAW)
+except Exception:
+    raise ValueError("DOMAINS 不是有效 JSON，请检查 .env 中 DOMAINS 配置")
 
-#如果使用阿里云解析 REGION出现错误再修改 默认不需要修改 https://help.aliyun.com/document_detail/198326.html
-REGION_ALI = 'cn-hongkong'
+# 解析生效条数 免费的DNSPod相同线路最多支持2条解析
+AFFECT_NUM = int(os.getenv("AFFECT_NUM", "2"))
 
-#解析生效时间，默认为600秒 如果不是DNS付费版用户 不要修改!!!
-TTL = 600
+# DNS服务商: DNSPod=1, 阿里云=2, 华为云=3
+DNS_SERVER = int(os.getenv("DNS_SERVER", "1"))
 
-#v4为筛选出IPv4的IP  v6为筛选出IPv6的IP
-TYPE = 'v4'
+# 如果使用华为云解析 需要从API凭证-项目列表中获取
+REGION_HW = os.getenv("REGION_HW", "cn-east-3")
 
-#API 密钥
-#腾讯云后台获取 https://console.cloud.tencent.com/cam/capi
-#阿里云后台获取 https://help.aliyun.com/document_detail/53045.html?spm=a2c4g.11186623.2.11.2c6a2fbdh13O53  注意需要添加DNS控制权限 AliyunDNSFullAccess
-#华为云后台获取 https://support.huaweicloud.com/devg-apisign/api-sign-provide-aksk.html
-SECRETID = 'WTTCWxxxxxxxxxxxxxxxxxxxxx84O0V'
-SECRETKEY = 'GXkG6D4X1Nxxxxxxxxxxxxxxxxxxxxx4lRg6lT'
+# 如果使用阿里云解析 REGION出现错误再修改 默认不需要修改
+REGION_ALI = os.getenv("REGION_ALI", "cn-hongkong")
 
-log_cf2dns = Logger('cf2dns.log', level='debug') 
+# 解析生效时间，默认为600秒
+TTL = int(os.getenv("TTL", "600"))
+
+# v4为筛选出IPv4的IP  v6为筛选出IPv6的IP
+TYPE = os.getenv("TYPE", "v4").lower()
+if TYPE not in ("v4", "v6"):
+    TYPE = "v4"
+
+# API 密钥
+SECRETID = os.getenv("SECRETID", "")
+SECRETKEY = os.getenv("SECRETKEY", "")
+
+LOG_FILE = os.getenv("LOG_FILE", "cf2dns.log")
+log_dir = os.path.dirname(LOG_FILE)
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
+log_cf2dns = Logger(LOG_FILE, level='debug')
 
 def get_optimization_ip():
     try:
-        headers = headers = {'Content-Type': 'application/json'}
-        data = {"key": KEY, "type": TYPE}
-        response = requests.post('https://api.hostmonit.com/get_optimization_ip', json=data, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
+        url = "https://www.wetest.vip/page/cloudflare/address_v4.html"
+        if TYPE == "v6":
+            url = "https://www.wetest.vip/page/cloudflare/address_v6.html"
+
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
             log_cf2dns.logger.error("CHANGE OPTIMIZATION IP ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: REQUEST STATUS CODE IS NOT 200")
             return None
+
+        line_map = {"移动": "CM", "联通": "CU", "电信": "CT"}
+        info = {"CM": [], "CU": [], "CT": []}
+        seen = {"CM": set(), "CU": set(), "CT": set()}
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", response.text, flags=re.S | re.I)
+
+        for row in rows:
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.S | re.I)
+            if len(cells) < 2:
+                continue
+
+            line = html.unescape(re.sub(r"<[^>]+>", "", cells[0])).strip()
+            ip = html.unescape(re.sub(r"<[^>]+>", "", cells[1])).strip()
+            key = line_map.get(line)
+            if key is None:
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+                if (TYPE == "v4" and addr.version != 4) or (TYPE == "v6" and addr.version != 6):
+                    continue
+            except ValueError:
+                continue
+
+            if ip not in seen[key]:
+                seen[key].add(ip)
+                info[key].append({"ip": ip})
+
+        return {"code": 200, "info": info, "total": len(info["CM"]) + len(info["CU"]) + len(info["CT"])}
     except Exception as e:
         log_cf2dns.logger.error("CHANGE OPTIMIZATION IP ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: " + str(e))
         return None
@@ -185,10 +245,15 @@ def main(cloud):
             log_cf2dns.logger.error("CHANGE DNS ERROR: ----Time: " + str(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())) + "----MESSAGE: " + str(e))
 
 if __name__ == '__main__':
+    if not SECRETID or not SECRETKEY:
+        raise ValueError("SECRETID 或 SECRETKEY 未配置，请在 .env 中设置")
+
     if DNS_SERVER == 1:
         cloud = QcloudApiv3(SECRETID, SECRETKEY)
     elif DNS_SERVER == 2:
         cloud = AliApi(SECRETID, SECRETKEY, REGION_ALI)
     elif DNS_SERVER == 3:
         cloud = HuaWeiApi(SECRETID, SECRETKEY, REGION_HW)
+    else:
+        raise ValueError("DNS_SERVER 配置错误，仅支持 1(DNSPod)/2(阿里云)/3(华为云)")
     main(cloud)

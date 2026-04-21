@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.omx
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+docker-data

@@ -5,6 +5,9 @@ import json
 import requests
 import os
 import traceback
+import re
+import html
+import ipaddress
 from dns.qCloud import QcloudApiv3 # QcloudApiv3 DNSPod 的 API 更新了 github@z0z0r4
 from dns.aliyun import AliApi
 from dns.huawei import HuaWeiApi
@@ -37,14 +40,43 @@ else:
 
 def get_optimization_ip():
     try:
-        headers = headers = {'Content-Type': 'application/json'}
-        data = {"key": KEY, "type": "v4" if RECORD_TYPE == "A" else "v6"}
-        response = requests.post('https://api.hostmonit.com/get_optimization_ip', json=data, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
+        ip_type = "v4" if RECORD_TYPE == "A" else "v6"
+        url = "https://www.wetest.vip/page/cloudflare/address_v4.html"
+        if ip_type == "v6":
+            url = "https://www.wetest.vip/page/cloudflare/address_v6.html"
+
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
             print("CHANGE OPTIMIZATION IP ERROR: REQUEST STATUS CODE IS NOT 200")
             return None
+
+        line_map = {"移动": "CM", "联通": "CU", "电信": "CT"}
+        info = {"CM": [], "CU": [], "CT": []}
+        seen = {"CM": set(), "CU": set(), "CT": set()}
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", response.text, flags=re.S | re.I)
+
+        for row in rows:
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, flags=re.S | re.I)
+            if len(cells) < 2:
+                continue
+
+            line = html.unescape(re.sub(r"<[^>]+>", "", cells[0])).strip()
+            ip = html.unescape(re.sub(r"<[^>]+>", "", cells[1])).strip()
+            key = line_map.get(line)
+            if key is None:
+                continue
+            try:
+                addr = ipaddress.ip_address(ip)
+                if (ip_type == "v4" and addr.version != 4) or (ip_type == "v6" and addr.version != 6):
+                    continue
+            except ValueError:
+                continue
+            if ip not in seen[key]:
+                seen[key].add(ip)
+                info[key].append({"ip": ip})
+
+        return {"code": 200, "info": info, "total": len(info["CM"]) + len(info["CU"]) + len(info["CT"])}
     except Exception as e:
         print("CHANGE OPTIMIZATION IP ERROR: " + str(e))
         return None
