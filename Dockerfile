@@ -1,6 +1,6 @@
 FROM python:3.12-slim-bookworm
 
-LABEL maintainer="tongdongdong@outlook.com"
+LABEL maintainer="473011317@qq.com"
 LABEL org.opencontainers.image.title="cf2dns"
 LABEL org.opencontainers.image.description="Cloudflare optimized IP updater"
 
