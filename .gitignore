@@ -24,3 +24,4 @@ cf2dns.log
 
 config.json
 .omx/
+.venv
